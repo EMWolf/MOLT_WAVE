@@ -1,0 +1,166 @@
+%Two Circles Example
+%Eric Wolf
+%Department of Mathematics
+%Michigan State University
+%April 11, 2013
+
+clear all;
+close all;
+clc;
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Set up %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+display('Preprocessing...')
+details = setDetails();
+[xsweep,NxLines] = setXSweep(details);
+[ysweep,NyLines] = setYSweep(details);
+
+mask = setMask(details,NxLines,xsweep);
+
+%Settings
+
+%Graphics Mode
+%'display' - display plots only (don't save to file)
+%'save_plots' - save selected plots to file
+%'save_movie' - save movie to file
+%'off' - disable graphics output
+graphicsMode = 'save_plots';
+
+%Number of steps between displaying plots
+dispStep = 1;
+
+%Time step indices to be saved as output in 'plot' mode
+saveInd = chooseSaveInd(details);
+maxSaveInd = max(saveInd);
+
+%Plot color scale
+clims = [-1 1];
+
+%Filename for 'save_movie'
+movieFileName = 'Two_Circles';
+
+[x,y] = meshgrid(details.x,details.y);
+
+%# figure
+% callfig;
+% figure, set(gcf, 'Color','white')
+% imagesc(details.x,details.y,details.u1,clims);  axis tight
+% contourf(x,y,details.u1,10);
+% surf(y,x,details.u1); shading interp; view([0,90]);
+Make_Surf(x,y,details.u0.*mask);
+caxis(clims);
+xlabel('x')
+ylabel('y')
+title('t = 0')
+%colorbar
+set(gca, 'nextplot','replacechildren');
+switch lower(graphicsMode)
+    case {'save_plots'}
+        delete('figures/*.*');
+        Make_Surf(x,y,details.u0.*mask);
+        xlabel('x')
+        ylabel('y')
+        title('t = 0')
+        fileNameBuffer = setFileNameBuffer(0,maxSaveInd);
+        saveas(gcf,['figures/twoCircles',fileNameBuffer,'.eps'],'epsc');
+    case {'save_movie'}
+        delete('movies/*.*');
+        aviobj = avifile(['movies/',movieFileName,'.avi'],'compression','None');
+        F = getframe(gca);
+        aviobj = addframe(aviobj,F);
+end
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Time loop %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+display('Beginning simulation...')
+for n=1:details.Nt
+
+    [details,xsweep] = doXSweep(details,xsweep,NxLines);
+    [details,ysweep] = doYSweep(details,ysweep,NyLines);
+    details = permuteTime(details);
+    
+    %Graphics output
+    switch lower(graphicsMode)
+        case {'display'}
+            if mod(n,dispStep)==0;
+                
+                %imagesc(details.x,details.y,details.u1,clims)
+                Make_Surf(x,y,details.u1.*mask);
+                %colorbar
+                xlabel('x')
+                ylabel('y')
+                title(['t = ' num2str(details.t)])
+                pause(0.01)
+            end
+            
+        case {'save_plots'}
+            if ismember(n,saveInd)
+                
+                %imagesc(details.x,details.y,details.u1)%clims)
+                Make_Surf(x,y,details.u1.*mask);
+                xlabel('x')
+                ylabel('y')
+                title(['t = ' num2str(details.t)])
+                fileNameBuffer = setFileNameBuffer(n,max(saveInd);
+                saveas(gcf,['figures/twoCircles' fileNameBuffer '.eps'],'epsc');
+            end
+            
+        case {'save_movie'}
+            if mod(n,dispStep)==0
+                %umax = max(max(details.u1(1:floor(details.Ny/2)-1,:)));
+                %umin = min(min(details.u1(1:floor(details.Ny/2)-1,:)));
+                %imagesc(details.x,details.y,details.u1,clims)
+                %contourf(details.x,details.y,details.u1,20);
+                %surf(y,x,details.u1); shading interp; view([0,90]);
+                %caxis(clims);
+                Make_Surf(x,y,details.u1.*mask);
+                xlabel('x')
+                ylabel('y')
+                title(['t = ' num2str(details.t)])
+                %pause(0.001);
+                F = getframe(gca);
+                aviobj = addframe(aviobj,F);
+                
+            end
+            
+            
+    end
+    
+    
+end
+
+%%%%%%%%%%%%%% Graphics output clean up & write log file %%%%%%%%%%%%%%%%%%
+
+logHeader = {'Simulation Log';...
+    'Implicit Wave Equation Solver';...
+    'Two Circles Example';...
+    date};
+
+
+logEntries = {'dx',details.dx;...
+    'dy',details.dy;...
+    'dt',details.dt;...
+    'CFL',details.CFL;...
+    'Nx',details.Nx;...
+    'Ny',details.Ny;...
+    'T',details.T;...
+    'R (circle radius)',details.R;...
+    'gamma (center shift)',details.gamma};
+
+
+
+switch lower(graphicsMode)
+    case {'save_plots'}
+        logFileName = 'figures/log.txt';
+        writeLogFile(logFileName,logHeader,logEntries);
+        
+        
+    case {'save_movie'}
+        close(gcf);
+        aviobj = close(aviobj);
+        
+        logFileName = 'movies/log.txt';
+        writeLogFile(logFileName,logHeader,logEntries);
+               
+end
+
+close all;

@@ -1,0 +1,9 @@
+function fileNameBuffer = setFileNameBuffer(n,Nmax)
+
+numDigits = floor(log10(n))+1;
+maxDigits = floor(log10(Nmax))+1;
+
+fileNameBuffer = '';
+
+while numDigits<
+

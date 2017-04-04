@@ -1,0 +1,8 @@
+function details = doXSweep(details,xsweep,NxLines)
+
+for n=1:NxLines
+   w(xsweep(n).yInd,xsweep(n)
+    
+end
+
+end

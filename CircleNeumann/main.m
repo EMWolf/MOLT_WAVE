@@ -1,0 +1,631 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%   Description: This script performs the solution of the wave equation with 
+%   Neumann BC on a circular domain with iterative embedded BC using the 
+%   diffusive version of the implicit wave solver.
+%
+%   Author: Eric Wolf (former PhD student at Michigan State University
+%   under advisor Prof. Andrew Christlieb, current postdoc at AFRL-WPAFB)
+%
+%   Date: April 21, 2015 (commented March 30, 2016)
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+clear all;
+close all;
+clc;
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%   Set problem parameters
+%
+
+R = pi/2; %Radius of the circular domain
+c = 1; %Wave speed
+
+bessel_mode = 0; %Bessel mode number
+bessel_root = 3.83170597020751; %First root of the derivative of the zeroth Bessel mode
+bessel_freq = (bessel_root/R)/c; %Frequency of the Bessel mode
+bessel_period = 2*pi/bessel_freq; %Period of the Bessel mode
+
+max_iter = 500; %Max number of boundary iterations
+tol = 1e-15; %Stopping criterion tolerance for difference between iterations
+
+
+T = 1*bessel_period; %One period
+CFL = 2; %CFL number
+dt = bessel_period/40; %Define time step in terms of the Bessel period
+display(['Number of time steps per period: ',num2str(bessel_period/dt)])
+
+%Form Cartesian grid
+
+dx = c*dt/CFL; 
+dy = dx;
+display(['Number of cells across the diameter: ',num2str(2*R/dx)])
+
+Nt = ceil(T/dt);
+
+beta = sqrt(2);
+alpha = beta/(c*dt);
+
+nu = alpha*dx;
+
+
+
+num_buff_cells = 10; %Number of buffer cells outside of the domain
+
+x = (-R-num_buff_cells*dx):dx:(R+num_buff_cells*dx);
+y = x;
+
+Nx = length(x)-1;
+Ny = length(y)-1;
+
+[xm,ym] = meshgrid(x,y);
+
+rm = sqrt(xm.^2+ym.^2); %Distance from grid point to origin (center of circle)
+
+theta_plot = linspace(0,2*pi,100);
+
+
+interior_mask = ones(Ny+1,Nx+1).*(rm<=R); %=1 at interior points
+
+extrap_mask = zeros(Ny+1,Nx+1);
+endpoint_mask = zeros(Ny+1,Nx+1);
+
+grid_mask = zeros(Ny+1,Nx+1);
+u_max = [];
+u_var = [];
+tru_var = [];
+
+err_hist = [];
+err_hist_L2 = [];
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%   Set up embedded boundary
+%
+
+%x-sweep
+figure;
+eb_endpts = axes;
+plot(eb_endpts,xm,ym,'b.',R*cos(theta_plot),R*sin(theta_plot),'k-')
+title('Embedded boundary points for endpoints')
+hold on;
+
+
+%Find first and last row containing interior grid points
+x_sweep.start_row = find(-R<y,1,'first');
+x_sweep.end_row = find(y<R,1,'last');
+
+
+extrapolation_dist_bdry = -1*ones(Ny+1,Nx+1);
+
+
+x_sweep.on = zeros(Ny+1,1); %=1 if the line is active (used in the sweep), 0 if not
+x_sweep.start_ind = zeros(Ny+1,1); %Start index of the x-sweep lines
+x_sweep.end_ind = zeros(Ny+1,1);    %End index of the x-sweep lines
+x_sweep.bdry_offset_L = zeros(Ny+1,1); %Ghost point offset (=1 typically)
+x_sweep.bdry_offset_R = zeros(Ny+1,1); %Ghost point offset (=1 typically)
+
+%Data for the first interpolation point along the norma
+x_sweep.norm_pt1_loc_x = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt1_loc_y = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt1_ind_x = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt1_ind_y = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt1_offset_x = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt1_offset_y = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt1_dist = zeros(Ny+1,Nx+1);
+
+%Data for the second interpolation point along the normal
+x_sweep.norm_pt2_loc_x = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt2_loc_y = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt2_ind_x = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt2_ind_y = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt2_offset_x = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt2_offset_y = zeros(Ny+1,Nx+1);
+x_sweep.norm_pt2_dist = zeros(Ny+1,Nx+1);
+
+
+
+%Go through x-lines, determine if active in x-sweeps, then determine line
+%and ghost point data
+for k=1:Ny+1
+    
+    if abs(y(k))<R
+        
+        
+        x_sweep.on(k) = 1;
+        
+        
+        x_sweep.start_ind(k) = find(-sqrt(R^2-y(k)^2)<=x,1,'first');
+        x_sweep.end_ind(k) = find(x<=sqrt(R^2-y(k)^2),1,'last');
+        
+        if x_sweep.start_ind(k)>x_sweep.end_ind(k)
+            
+            x_sweep.on(k)=0;
+        end
+        
+    end
+end
+
+for k=1:Ny+1
+    if x_sweep.on(k) == 1
+        x_sweep.bdry_offset_L(k) = 1;
+        x_sweep.bdry_offset_R(k) = 1;
+        
+        %Set up boundary information
+        %Left boundary
+        idx_x = x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k);
+        
+        [x_sweep.norm_pt1_loc_x(k,idx_x), x_sweep.norm_pt1_loc_y(k,idx_x),...
+            x_sweep.norm_pt1_ind_x(k,idx_x), x_sweep.norm_pt1_ind_y(k,idx_x),...
+            x_sweep.norm_pt1_offset_x(k,idx_x),x_sweep.norm_pt1_offset_y(k,idx_x),...
+            x_sweep.norm_pt1_dist(k,idx_x),...
+            x_sweep.norm_pt2_loc_x(k,idx_x), x_sweep.norm_pt2_loc_y(k,idx_x),...
+            x_sweep.norm_pt2_ind_x(k,idx_x), x_sweep.norm_pt2_ind_y(k,idx_x),...
+            x_sweep.norm_pt2_offset_x(k,idx_x),x_sweep.norm_pt2_offset_y(k,idx_x),...
+            x_sweep.norm_pt2_dist(k,idx_x),...
+            x_sweep.ext_pt_dist(k,idx_x)] = getBoundaryInformation(idx_x,k,x,y,dx,dy,R);
+        
+        
+        %Left boundary
+        idx_x = x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k);
+        
+        [x_sweep.norm_pt1_loc_x(k,idx_x), x_sweep.norm_pt1_loc_y(k,idx_x),...
+            x_sweep.norm_pt1_ind_x(k,idx_x), x_sweep.norm_pt1_ind_y(k,idx_x),...
+            x_sweep.norm_pt1_offset_x(k,idx_x),x_sweep.norm_pt1_offset_y(k,idx_x),...
+            x_sweep.norm_pt1_dist(k,idx_x),...
+            x_sweep.norm_pt2_loc_x(k,idx_x), x_sweep.norm_pt2_loc_y(k,idx_x),...
+            x_sweep.norm_pt2_ind_x(k,idx_x), x_sweep.norm_pt2_ind_y(k,idx_x),...
+            x_sweep.norm_pt2_offset_x(k,idx_x),x_sweep.norm_pt2_offset_y(k,idx_x),...
+            x_sweep.norm_pt2_dist(k,idx_x),...
+            x_sweep.ext_pt_dist(k,idx_x)] = getBoundaryInformation(idx_x,k,x,y,dx,dy,R);
+        
+        endpoint_mask(k,x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k)) = 1;
+        endpoint_mask(k,x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k)) = 1;
+        
+        
+    
+        x_sweep.Nline(k) = (x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k))-...
+            (x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k));
+        
+        
+        grid_mask(k,...
+            x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k):x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k)) = ...
+            ones(1,x_sweep.Nline(k)+1);
+        
+   
+        %Plot embedded boundary data
+        
+        plot(eb_endpts,x(x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k)),y(k),'rx',...
+            x(x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k)),y(k),'rx','MarkerSize',12)
+        
+    end
+    
+end
+
+
+
+y_sweep.start_col = find(-R<x,1,'first');
+y_sweep.end_col = find(x<R,1,'last');
+
+
+y_sweep.on = zeros(Nx+1,1); %=1 if the line is active in the y-sweep
+y_sweep.start_ind = zeros(Nx+1,1); %Starting index for each y-sweep line
+y_sweep.end_ind = zeros(Nx+1,1); %Ending index for each y-sweep line
+y_sweep.bdry_offset_D = zeros(Nx+1,1); %Ghost point offset (=1 typically)
+y_sweep.bdry_offset_U = zeros(Nx+1,1); %Ghost point offset (=1 typically)
+
+%Data for the first interpolation point along the normal
+y_sweep.norm_pt1_loc_x = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt1_loc_y = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt1_ind_x = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt1_ind_y = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt1_offset_x = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt1_offset_y = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt1_dist = zeros(Ny+1,Nx+1);
+
+%Data for the second interpolation point along the normal
+y_sweep.norm_pt2_loc_x = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt2_loc_y = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt2_ind_x = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt2_ind_y = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt2_offset_x = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt2_offset_y = zeros(Ny+1,Nx+1);
+y_sweep.norm_pt2_dist = zeros(Ny+1,Nx+1);
+
+%Go through y-lines, determine if active in y-sweeps, then determine line
+%and ghost point data
+for j=1:Nx+1
+    
+    if abs(x(j))<R
+        
+        
+        y_sweep.on(j) = 1;
+        
+        
+        
+        y_sweep.start_ind(j) = find(-sqrt(R^2-x(j)^2)<=y,1,'first');
+        y_sweep.end_ind(j) = find(y<=sqrt(R^2-x(j)^2),1,'last');
+        
+        if y_sweep.start_ind(j)>y_sweep.end_ind(j)
+            
+            y_sweep.on(j)=0;
+        end
+    end
+end
+
+%Set up interpolation for ghost points
+for j=1:Nx+1
+    if y_sweep.on(j) == 1
+        y_sweep.bdry_offset_D(j) = 1;
+        y_sweep.bdry_offset_U(j) = 1;
+        
+        %Downer boundary
+        idx_y = y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j);
+        
+        [y_sweep.norm_pt1_loc_x(idx_y,j), y_sweep.norm_pt1_loc_y(idx_y,j),...
+            y_sweep.norm_pt1_ind_x(idx_y,j), y_sweep.norm_pt1_ind_y(idx_y,j),...
+            y_sweep.norm_pt1_offset_x(idx_y,j),y_sweep.norm_pt1_offset_y(idx_y,j),...
+            y_sweep.norm_pt1_dist(idx_y,j),...
+            y_sweep.norm_pt2_loc_x(idx_y,j), y_sweep.norm_pt2_loc_y(idx_y,j),...
+            y_sweep.norm_pt2_ind_x(idx_y,j), y_sweep.norm_pt2_ind_y(idx_y,j),...
+            y_sweep.norm_pt2_offset_x(idx_y,j),y_sweep.norm_pt2_offset_y(idx_y,j),...
+            y_sweep.norm_pt2_dist(idx_y,j),...
+            y_sweep.ext_pt_dist(idx_y,j)] = getBoundaryInformation(j,idx_y,x,y,dx,dy,R);
+        
+        %Upper boundary
+        idx_y = y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j);
+        
+        [y_sweep.norm_pt1_loc_x(idx_y,j), y_sweep.norm_pt1_loc_y(idx_y,j),...
+            y_sweep.norm_pt1_ind_x(idx_y,j), y_sweep.norm_pt1_ind_y(idx_y,j),...
+            y_sweep.norm_pt1_offset_x(idx_y,j),y_sweep.norm_pt1_offset_y(idx_y,j),...
+            y_sweep.norm_pt1_dist(idx_y,j),...
+            y_sweep.norm_pt2_loc_x(idx_y,j), y_sweep.norm_pt2_loc_y(idx_y,j),...
+            y_sweep.norm_pt2_ind_x(idx_y,j), y_sweep.norm_pt2_ind_y(idx_y,j),...
+            y_sweep.norm_pt2_offset_x(idx_y,j),y_sweep.norm_pt2_offset_y(idx_y,j),...
+            y_sweep.norm_pt2_dist(idx_y,j),...
+            y_sweep.ext_pt_dist(idx_y,j)] = getBoundaryInformation(j,idx_y,x,y,dx,dy,R);
+        
+        endpoint_mask(y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j),j) = 1;
+        endpoint_mask(y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j),j) = 1;
+
+        y_sweep.Nline(j) = (y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j))-...
+            (y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j));
+        
+        
+        grid_mask(...
+            y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j):y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j),...
+            j) = ...
+            ones(y_sweep.Nline(j)+1,1);
+        
+        
+        plot(eb_endpts,x(j),y(y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j)),'r+','MarkerSize',12)
+        
+        plot(eb_endpts,x(j),y(y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j)),'r+','MarkerSize',12)
+        
+        
+        
+    end
+    
+end
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%   Solution array initialization
+%
+
+%Exact solution profile
+solution_profile = (0<(interior_mask+extrap_mask+endpoint_mask)).*besselj(bessel_mode,bessel_root*(rm/R));
+
+
+%Initialize solution arrays
+u0 = (rm<R).*besselj(bessel_mode,bessel_root*(rm/R));
+
+
+u1 = cos(bessel_freq*dt)*u0;
+u2 = cos(bessel_freq*2*dt)*u0;
+u3 = 0*u0;
+
+%Interpolate to exterior ghost points
+u0 = interpolateToGhostPoints(u0,x_sweep,y_sweep,x,y,Nx,Ny,dx,dy);
+u1 = interpolateToGhostPoints(u1,x_sweep,y_sweep,x,y,Nx,Ny,dx,dy);
+u2 = interpolateToGhostPoints(u2,x_sweep,y_sweep,x,y,Nx,Ny,dx,dy);
+
+
+
+%Initialize auxiliary variables
+w0 = u0;
+w1 = u1;
+w2 = u2;
+w3 = u3;
+
+z = u1;
+
+
+
+Ix = 0*u0;
+Iy = 0*u0;
+
+Ix_interp = Ix;
+Iy_interp = Iy;
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+%   Time Stepping
+%
+
+for n=1:Nt
+    
+    display(['Time step n = ',num2str(n), ' of ',num2str(Nt)])
+    
+    Ix = 0*u0;
+    Iy = 0*u0;
+    
+    Ix_interp = Ix;
+    Iy_interp = Iy;
+    
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %   x-sweep
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    
+    %Perform extrapolation to external ghost points
+    u1 = interpolateToGhostPoints(u1,x_sweep,y_sweep,x,y,Nx,Ny,dx,dy);
+    
+    
+    %Perform integration
+    for k=1:Ny+1
+        if x_sweep.on(k)==1
+            ind = (x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k)):(x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k));
+            integrand = 0.5*(5*u2(k,ind)-4*u1(k,ind)+u0(k,ind));
+            Ix(k,...
+                (x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k)):(x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k))) = ...
+                0.5*GF_Quad(integrand,nu);
+            
+            
+        end
+    end
+    
+    
+    
+    %Perform boundary correction iteration
+    
+    
+    iter_count = 0;
+    err = 1;
+    
+    %Set initial for boundary values by extrapolation of previous time
+    %steps
+    %w2_temp = 2*w1-w0; %Linear extrapolation
+    w2_temp = 3*w2-3*w1+w0; %Quadratic extrapolation
+    w2_temp = interpolateToGhostPoints(w2_temp,x_sweep,y_sweep,x,y,Nx,Ny,dx,dy);
+    w2_temp2 = w2_temp;
+    
+    while (iter_count<max_iter)&&(tol<err)
+        for k=1:Ny+1
+            if x_sweep.on(k)==1
+                
+                w_L = Ix(k,x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k))-...
+                    w2_temp2(k,x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k));
+                w_R = Ix(k,x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k))-...
+                    w2_temp2(k,x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k));
+                
+                mu = exp(-nu*x_sweep.Nline(k));
+                A = (mu*w_R-w_L)/(1-mu^2);
+                B = (mu*w_L-w_R)/(1-mu^2);
+                
+                %Impose boundary correction
+                
+                line_ind = (x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k)):(x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k));
+                
+                w2_temp(k,line_ind) =...
+                    Ix(k,line_ind)+...
+                    A*exp(-nu*(0:x_sweep.Nline(k)))+B*exp(-nu*(x_sweep.Nline(k):-1:0));
+                
+                
+                w2_temp = w2_temp.*interior_mask;
+            end
+        end
+        
+        w2_temp = interpolateToGhostPoints(w2_temp,x_sweep,y_sweep,x,y,Nx,Ny,dx,dy);
+        
+        err = max(max(abs(w2_temp-w2_temp2)));
+        iter_count = iter_count+1;
+        
+        w2_temp2 = w2_temp;
+        
+    end
+    
+    %w2 = w2_temp;
+    
+    for k =1:Ny
+        if x_sweep.on(k)==1
+            
+            
+            w_L = Ix(k,x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k))-...
+                w2_temp2(k,x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k));
+            w_R = Ix(k,x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k))-...
+                w2_temp2(k,x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k));
+            
+            
+            mu = exp(-nu*x_sweep.Nline(k));
+            A = (mu*w_R-w_L)/(1-mu^2);
+            B = (mu*w_L-w_R)/(1-mu^2);
+            
+            %Impose boundary correction
+            
+            line_ind = (x_sweep.start_ind(k)-x_sweep.bdry_offset_L(k)):(x_sweep.end_ind(k)+x_sweep.bdry_offset_R(k));
+            
+            w3(k,line_ind) =...
+                Ix(k,line_ind)+...
+                A*exp(-nu*(0:x_sweep.Nline(k)))+B*exp(-nu*(x_sweep.Nline(k):-1:0));
+            
+            %
+        end
+        
+    end
+    
+    
+    %w3 = w3.*interior_mask;
+    w3 = interpolateToGhostPoints(w3,x_sweep,y_sweep,x,y,Nx,Ny,dx,dy);
+    
+    
+    display(['Iteration count, x-sweep boundary correction: ',num2str(iter_count)])
+    display(['Iteration error, x-sweep boundary correction: ',num2str(err)])
+    
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    %   y-sweep
+    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+    
+    
+    %Perform convolution
+    for j=1:Nx+1
+        if y_sweep.on(j)==1
+            integrand = w3(...
+                (y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j)):(y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j)),...
+                j);
+            Iy(...
+                (y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j)):(y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j)),...
+                j) = ...
+                0.5*GF_Quad(integrand,nu);
+            
+            
+        end
+    end
+    
+    
+    %Perform boundary correction iteration
+    
+    iter_count = 0; %Iteration counter
+    err = 1;    %Iteration error (difference between iterates)
+    
+    z_temp = z;
+    z_temp2 = z;
+    
+    %Set initial for boundary values by extrapolation of previous time
+    %steps
+    %u3_temp = 2*u2-u1; %Linear extrapolation
+    u3_temp = 3*u2-3*u1+u0; %Quadratic extrapolation
+    u3_temp2 = u3_temp;
+    
+    while (iter_count<max_iter)&&(tol<err)
+        for j=1:Nx+1
+            if y_sweep.on(j)==1
+                
+                w_L = Iy(y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j),j)...
+                    -u3_temp2(y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j),j);
+                w_R = Iy(y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j),j)-...
+                    u3_temp2(y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j),j);
+                
+                mu = exp(-nu*y_sweep.Nline(j));
+                A = (mu*w_R-w_L)/(1-mu^2);
+                B = (mu*w_L-w_R)/(1-mu^2);
+                
+                %Impose boundary correction
+                line_ind = (y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j)):(y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j));
+                u3_temp(line_ind,j) =...
+                    Iy(line_ind,j) + ...
+                    A*exp(-nu*(0:y_sweep.Nline(j))')+B*exp(-nu*(y_sweep.Nline(j):-1:0)');
+                
+                
+                
+                
+            end
+        end
+        
+        
+        u3_temp = interpolateToGhostPoints(u3_temp,x_sweep,y_sweep,x,y,Nx,Ny,dx,dy);
+        
+        err = max(max(abs(u3_temp-u3_temp2)));
+        iter_count = iter_count+1;
+        
+        u3_temp2 = u3_temp;
+        
+    end
+    
+    
+    for j=1:Nx+1
+        if y_sweep.on(j)==1
+            w_L = Iy(y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j),j)...
+                -u3_temp2(y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j),j);
+            w_R = Iy(y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j),j)-...
+                u3_temp2(y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j),j);
+            
+            mu = exp(-nu*y_sweep.Nline(j));
+            A = (mu*w_R-w_L)/(1-mu^2);
+            B = (mu*w_L-w_R)/(1-mu^2);
+            
+            %Impose boundary correction
+            line_ind = (y_sweep.start_ind(j)-y_sweep.bdry_offset_D(j)):(y_sweep.end_ind(j)+y_sweep.bdry_offset_U(j));
+            u3(line_ind,j) =...
+                Iy(line_ind,j) + ...
+                A*exp(-nu*(0:y_sweep.Nline(j))')+B*exp(-nu*(y_sweep.Nline(j):-1:0)');
+            
+            
+            
+        end
+        
+    end
+    
+    
+    
+    u3 = interpolateToGhostPoints(u3,x_sweep,y_sweep,x,y,Nx,Ny,dx,dy);
+    
+    display(['Iteration count, y-sweep boundary correction: ',num2str(iter_count)])
+    display(['Iteration error, y-sweep boundary correction: ',num2str(err)])
+    
+    
+    
+    
+    u0 = u1;
+    u1 = u2;
+    u2 = u3;
+    
+    w0 = w1;
+    w1 = w2;
+    w2 = w3;
+    
+    
+    
+    %Plot the solution and error
+    exact_solution = solution_profile*cos(bessel_freq*(n+2)*dt);
+    
+    %surf(u1-exact_solution);
+    figure(4);
+    imagesc(x,y,(rm<R).*(u2-exact_solution))
+    xlabel('x')
+    ylabel('y')
+    title({['Error u - u_{ex} after ',num2str((n+2)*dt/bessel_period),' periods'],...
+        ['CFL of ', num2str(CFL)],...
+        ['Number of grid points across the diameter: ',num2str(2*R/dx)],...
+        ['Number of time steps per period: ',num2str((2*pi)/(bessel_freq*dt))]})
+    colorbar;
+    
+    figure(5);
+    %surf(xm,ym,u1)
+    imagesc(x,y,u2)
+    colorbar;
+    title('Numerical solution u')
+    
+    err_hist = [err_hist max(max(abs((rm<R).*(u2-exact_solution))))];
+    err_hist_L2 = [err_hist_L2 sqrt(sum(sum((rm<R).*(u2-exact_solution).^2))*dx*dy)];
+    u_max = [u_max max(max(abs(u2(grid_mask>0))))];
+    u_var = [u_var (max(max(u2(grid_mask>0)))-min(min(u2(grid_mask>0))))];
+    tru_var = [tru_var (max(max(exact_solution(grid_mask>0)))-min(min(exact_solution(grid_mask>0))))];
+    figure(6)
+    %plot((1:n)*dt/bessel_period,u_var,'rx',(1:n)*dt/bessel_period,u_max,'b+',(1:n)*dt/bessel_period,tru_var,'g.')
+    
+    plot((1:n)*dt/bessel_period,err_hist,'r.',(1:n)*dt/bessel_period,err_hist_L2,'bx')
+    legend('L^{\infty} error','L^{2} error')
+    ylabel('Error')
+    xlabel('Time (Periods)')
+    pause(0.1);
+end
+
+display(['dt = ', num2str(dt)])
+display(['dx = ',num2str(dx)])
+display(['L^{\infty} error : ',num2str(max(err_hist))])
+display(['L^{2} error : ',num2str(max(err_hist_L2))])
+

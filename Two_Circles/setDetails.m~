@@ -1,0 +1,50 @@
+function details = setDetails()
+
+% --------
+Lx = 1;
+Ly = 1;
+Nx = 100;
+Ny = 100;
+c=1;
+T=1;
+dt=10e-3;
+
+% ------------------------Two circles geometry parameters---------------- %
+R = 0.5;    %Radius of each circle
+if 
+gamma = 0.1;    %Displacement of center from the origin along the x-axis
+% --------------------Define numerical parameters------------------------ %
+dx = Lx/Nx;
+dy = Ly/Ny;
+% dt = sqrt(dx^2+dy^2)*CFL/c;
+Nt = round(T/dt);				%Total number of time steps
+%---------Numerical Parameters for implicit solver--------%
+nux = sqrt(2)*dx/(c*dt);		%nu = alpha*dx = sqrt(2)*dx/(c*dt)
+ex  = exp(-nux);
+a1x = 2*(2/nux*sinh(nux/2))^2*tanh(nux/2);
+a0x = 2-2*a1x*ex/(1-ex);
+v1x = ex.^(0:Nx);
+v2x = fliplr(v1x);
+
+nuy = sqrt(2)*dy/(c*dt);		%nu = alpha*dy = sqrt(2)*dy/(c*dt)
+ey  = exp(-nuy);
+a1y = 2*(2/nuy*sinh(nuy/2))^2*tanh(nuy/2);
+a0y = 2-2*a1y*ey/(1-ey);
+v1y = ey.^(0:Ny);
+v2y = fliplr(v1y);
+
+% --------------------Initialize solution vectors------------------------ %
+x = (0:Nx)'*dx;					%xj = (j-1/2)*dx, 1<=j<=Nx
+y = (0:Ny)'*dy;					%yj = (j-1/2)*dy, 1<=j<=Ny
+[x,y] = meshgrid(x,y);
+u0 = f(x,y);
+u1 = u0 + dt*g(x,y);
+u  = zeros(Ny+1,Nx+1);
+w  = zeros(Ny+1,Nx+1);				%w is a temp vector for the 1st ADI stage
+z  = zeros(Ny+1,Nx+1);				%z is a temp vector for the 2nd ADI stage
+maxu = 0;
+
+details = struct('N',N);
+
+
+end

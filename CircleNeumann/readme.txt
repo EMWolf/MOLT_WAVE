@@ -1,0 +1,1 @@
+Execute the script, "main.m", to run the simulation.
